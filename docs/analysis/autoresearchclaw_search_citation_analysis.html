@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>AutoResearchClaw 技術分析：Search &amp; Citation 完整生命週期深度研究</title>
+<style>
+  :root {
+    --primary: #0b5394;
+    --accent: #d97706;
+    --ok: #198754;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --code-bg: #f6f8fa;
+    --border: #d0d7de;
+    --muted: #57606a;
+    --bg: #ffffff;
+    --text: #1f2328;
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+    color: var(--text); background: var(--bg);
+    max-width: 1080px; margin: 0 auto; padding: 32px 24px;
+    line-height: 1.75;
+  }
+  h1 { color: var(--primary); border-bottom: 3px solid var(--primary); padding-bottom: 8px; }
+  h2 { color: var(--primary); margin-top: 2.5em; border-left: 6px solid var(--primary); padding-left: 12px; }
+  h3 { color: #1a3a5c; margin-top: 1.6em; }
+  h4 { color: #355a82; margin-top: 1.2em; }
+  code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 0.92em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 14px 16px; overflow-x: auto; font-size: 0.88em; line-height: 1.55;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.94em; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #eef4fb; color: var(--primary); }
+  tr:nth-child(2n) td { background: #fafbfc; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.82em; margin-right: 4px; }
+  .badge-ok { background: #d1f0d8; color: var(--ok); }
+  .badge-warn { background: #fdecc8; color: var(--warn); }
+  .badge-bad { background: #f9d4d4; color: var(--bad); }
+  .badge-muted { background: #eaeef2; color: var(--muted); }
+  .callout {
+    border-left: 4px solid var(--accent); background: #fff7ed; padding: 10px 14px;
+    margin: 14px 0; border-radius: 4px;
+  }
+  .callout-warn { border-left-color: var(--bad); background: #fff5f5; }
+  .toc { background: #f6f8fa; border: 1px solid var(--border); border-radius: 6px; padding: 14px 24px; }
+  .toc ol { margin: 0; }
+  .toc a { color: var(--primary); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .meta { color: var(--muted); font-size: 0.9em; margin-bottom: 24px; }
+  .pill { display: inline-block; padding: 1px 7px; background: #eef4fb; border: 1px solid #b8d4ea; border-radius: 999px; font-size: 0.8em; color: var(--primary); margin-right: 4px; }
+  .src { color: var(--muted); font-size: 0.85em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .lifecycle-step {
+    border: 1px solid var(--border); border-left: 5px solid var(--primary);
+    border-radius: 6px; padding: 14px 18px; margin: 14px 0; background: #fbfcfe;
+  }
+  .lifecycle-step h4 { margin-top: 0; }
+  .pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .pros, .cons { border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; }
+  .pros { background: #f0fbf4; border-left: 4px solid var(--ok); }
+  .cons { background: #fef6f6; border-left: 4px solid var(--bad); }
+  .footer { margin-top: 4em; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>AutoResearchClaw：Search &amp; Citation 完整生命週期深度技術分析</h1>
+<p class="meta">
+  分析對象：<code>aiming-lab/AutoResearchClaw</code> ·
+  分支：<code>claude/research-search-citation-8qOpv</code> ·
+  分析時間：2026-05-11
+</p>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#overview">系統概觀</a></li>
+    <li><a href="#architecture">整體技術架構</a></li>
+    <li><a href="#search-strategy">Search Strategy：查詢規劃</a></li>
+    <li><a href="#literature-collect">Literature Collection：多源檢索與容錯</a></li>
+    <li><a href="#screen-extract">Literature Screen &amp; Knowledge Extract</a></li>
+    <li><a href="#citation-verify">Citation Verify：四層驗證引擎</a></li>
+    <li><a href="#anti-fab">反幻覺機制：VerifiedRegistry 與 BibTeX 修剪</a></li>
+    <li><a href="#lifecycle">章節 ★：Search → Citation 完整生命週期</a></li>
+    <li><a href="#pros-cons">技術優缺點分析</a></li>
+    <li><a href="#reproduce-prompt">附錄：交付給其他 Coding Agent 的覆現 Prompt</a></li>
+  </ol>
+</div>
+
+<!-- =================================================================== -->
+<h2 id="overview">1. 系統概觀</h2>
+<p>
+  AutoResearchClaw（以下簡稱 ARC）是一個 23 階段自主科研管線（autonomous research pipeline），輸入一個研究題目即可輸出
+  期刊/會議級別的論文草稿、實驗代碼、圖表與經過驗證的 <code>references.bib</code>。
+  ARC 將整個流程切分為 8 個 Phase；本文件聚焦於 <strong>Phase B（文獻發現）</strong> 與
+  <strong>Phase H（最終驗證）</strong>之間關於檢索（Search）與引用（Citation）的所有技術細節。
+</p>
+
+<table>
+<thead><tr><th>Phase</th><th>Stage（編號）</th><th>角色</th></tr></thead>
+<tbody>
+<tr><td>B</td><td>3 SEARCH_STRATEGY</td><td>LLM 規劃多策略查詢計畫</td></tr>
+<tr><td>B</td><td>4 LITERATURE_COLLECT</td><td>呼叫 OpenAlex / Semantic Scholar / arXiv 收集論文</td></tr>
+<tr><td>B</td><td>5 LITERATURE_SCREEN（Gate）</td><td>關鍵字預過濾 + LLM 篩選</td></tr>
+<tr><td>B</td><td>6 KNOWLEDGE_EXTRACT</td><td>抽取結構化證據卡片</td></tr>
+<tr><td>G</td><td>17 PAPER_DRAFT</td><td>注入 cite_key 與引用規則，產出論文</td></tr>
+<tr><td>G/H</td><td>22 EXPORT_PUBLISH</td><td>解析正文引用、回填 cite_key、修剪 BibTeX</td></tr>
+<tr><td>H</td><td>23 CITATION_VERIFY</td><td>四層引用真實性驗證</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+  <strong>本研究的核心問題</strong>：ARC 如何在 LLM 容易「幻覺」引用的場景下，從查詢規劃一路守住引用真實性？
+  從程式碼觀察，答案是「<em>四道防線疊加</em>」：詞彙預過濾 → LLM 篩選 → 預先 verify（草稿前）→ 最終 verify（出口前）。
+</div>
+
+<!-- =================================================================== -->
+<h2 id="architecture">2. 整體技術架構</h2>
+<h3>2.1 模組目錄</h3>
+<pre><code>researchclaw/
+├── literature/
+│   ├── models.py            # Paper / Author / cite_key / to_bibtex()
+│   ├── search.py            # 多源統一檢索協調器（去重、fallback）
+│   ├── openalex_client.py   # OpenAlex API（無 API key，10K req/day）
+│   ├── semantic_scholar.py  # Semantic Scholar API + 三態斷路器
+│   ├── arxiv_client.py      # arXiv API（封裝 arxiv 套件 + 斷路器）
+│   ├── cache.py             # SHA256 鍵 + per-source TTL 的本地快取
+│   ├── verify.py            # 引用四層驗證引擎（957 行核心）
+│   ├── novelty.py           # 新穎性檢測
+│   └── trends.py
+├── pipeline/
+│   ├── stage_impls/
+│   │   ├── _literature.py      # Stage 3-6 階段實作
+│   │   ├── _paper_writing.py   # Stage 17 注入引用指令
+│   │   └── _review_publish.py  # Stage 22 修剪、回填、最終驗證
+│   ├── verified_registry.py    # 反數字幻覺登錄表
+│   └── paper_verifier.py       # 論文數字防偽
+└── web/
+    ├── search.py, scholar.py, agent.py  # Web 搜尋擴增</code></pre>
+
+<h3>2.2 關鍵資料模型</h3>
+<p>
+  <code>Paper</code>（<span class="src">literature/models.py:32–51</span>）為 frozen dataclass，
+  欄位包含：<code>paper_id, title, authors, year, abstract, venue, citation_count, doi, arxiv_id, url, source, _bibtex_override</code>。
+  <strong>cite_key</strong> 規則為 <code>lastname + year + keyword</code>（取首位作者姓氏 ASCII 折疊 + 年份 + 標題首個非停用詞名詞）。
+</p>
+<pre><code># 範例
+Paper(title="Attention Is All You Need", authors=[Author("Vaswani")], year=2017, ...)
+.cite_key  # → "vaswani2017attention"</code></pre>
+<p>
+  <code>to_bibtex()</code>（<span class="src">models.py:78–152</span>）負責產生 BibTeX，會自動偵測 arXiv 分類碼
+  （如 <code>cs.CY</code>）與真正期刊／會議名稱差異，並選擇 <code>@inproceedings</code> / <code>@article</code> 條目型別。
+</p>
+
+<!-- =================================================================== -->
+<h2 id="search-strategy">3. Stage 3 — Search Strategy：LLM 規劃查詢計畫</h2>
+<h3>3.1 Prompt 設計</h3>
+<p>
+  Prompt 位於 <span class="src">prompts.default.yaml:382–399</span>，採用 <code>json_mode: true</code>。
+  系統訊息要求「<em>瞄準 30–60 篇參考文獻的完整覆蓋</em>」，使用者訊息要求 LLM 產出：
+</p>
+<pre><code>{
+  "search_plan_yaml": "&lt;valid YAML&gt;",
+  "sources": [{ "id", "name", "type", "url", "status", "query", "verified_at" }]
+}</code></pre>
+<p>
+  YAML 內須包含至少 <strong>3 個策略</strong>，每個策略 3–5 個 <strong>3–6 個字</strong>的查詢，
+  總計至少 8 條查詢，並涵蓋：核心題目、相關方法、Benchmark/Dataset、理論基礎、應用場景。
+</p>
+
+<h3>3.2 容錯：規則式查詢擴展</h3>
+<p>
+  若 LLM 失敗或產出空計畫，<span class="src">stage_impls/_literature.py:41–78</span> 提供 fallback：
+  取題目前 5 字、後 5 字、以及 <em>topic + survey / benchmark / comparison</em> 等後綴，
+  以 <code>set</code> 去重後送入下游。這保證 Stage 3 永遠不會「卡死」管線。
+</p>
+
+<!-- =================================================================== -->
+<h2 id="literature-collect">4. Stage 4 — Literature Collection：多源檢索與容錯</h2>
+<h3>4.1 三來源呼叫順序（依 rate-limit 友善度排序）</h3>
+<table>
+<thead><tr><th>順序</th><th>來源</th><th>速率限制</th><th>快取 TTL</th><th>容錯機制</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>OpenAlex</td><td>10,000 req/day（含 polite email），200 ms 間隔</td><td>3 天</td><td>—</td></tr>
+<tr><td>2</td><td>Semantic Scholar</td><td>1 req/s（程式中保守設 1.5 s）</td><td>3 天</td><td><strong>三態斷路器</strong>：3 連續 429 → OPEN（120 s），HALF_OPEN 探測，最長 600 s</td></tr>
+<tr><td>3</td><td>arXiv</td><td>arxiv 套件內建退避</td><td>24 小時</td><td>斷路器 + 180 s 冷卻</td></tr>
+</tbody>
+</table>
+<p>原始檔：<span class="src">literature/search.py:104–200</span></p>
+
+<h3>4.2 斷路器三態（Three-State Circuit Breaker）</h3>
+<p>
+  位於 <span class="src">semantic_scholar.py:43–140</span>。設計可在 API 不穩定時優雅降級：
+</p>
+<ul>
+  <li><span class="badge badge-ok">CLOSED</span> 正常呼叫</li>
+  <li><span class="badge badge-bad">OPEN</span> 跳過呼叫，避免雪崩，冷卻時間採指數退避（120 s → 600 s）</li>
+  <li><span class="badge badge-warn">HALF_OPEN</span> 冷卻結束後送一筆探測請求，成功則 CLOSE，失敗則加倍冷卻時間並回到 OPEN</li>
+</ul>
+
+<h3>4.3 去重策略</h3>
+<p>
+  多源合併後採三層去重（<span class="src">search.py:270–348</span>）：
+  <code>DOI → arXiv ID → 正規化標題完全比對</code>。
+  其中第三層是把標題小寫化、去標點後做<strong>嚴格等值比對</strong>（<code>_normalise_title</code>，<span class="src">search.py:270–276</span>），
+  並非模糊 Jaccard。模糊 Jaccard 相似度僅用於 <em>citation verify</em> 的標題比對，與此處去重無關。
+</p>
+
+<h3>4.4 快取設計</h3>
+<p>
+  <span class="src">literature/cache.py:32–142</span>。Key 為 <code>SHA256(query.lower() | source | limit)[:16]</code>，
+  per-source TTL：arXiv 24 h、Semantic Scholar/OpenAlex 3 天、Citation verify <strong>365 天</strong>（接近永久）。
+  快取目錄：<code>.researchclaw_cache/literature/</code>，序列化格式為 JSON 文字檔。
+</p>
+
+<!-- =================================================================== -->
+<h2 id="screen-extract">5. Stage 5/6 — Screening 與 Knowledge Extract</h2>
+<h3>5.1 兩段式篩選</h3>
+<ol>
+  <li>
+    <strong>P1-1 關鍵字預過濾</strong>（<span class="src">_literature.py:640–663</span>）：
+    從題目抽取關鍵字，標題＋摘要至少命中 1 個關鍵字（原為 ≥ 2，已放寬以避免誤刪）。
+    若預過濾全數刪除，<em>安全閥</em>退回原始集合。
+  </li>
+  <li>
+    <strong>P1-2 LLM 篩選</strong>（prompt <span class="src">literature_screen</span>，prompts.yaml:171–191）：
+    LLM 對每篇打分 <code>relevance_score</code> 與 <code>quality_score</code>，
+    系統訊息明確指示「<em>aggressive reject off-topic papers</em>」。
+    篩選結果保留所有原始欄位（paper_id、doi、arxiv_id、cite_key 等）。
+  </li>
+</ol>
+
+<h3>5.2 Stage 6 Knowledge Extraction</h3>
+<p>
+  Prompt <span class="src">knowledge_extract</span>（prompts.yaml:145–156）以 JSON 模式回傳結構化的證據卡片：
+  <code>{card_id, title, cite_key, problem, method, data, metrics, findings, limitations, citation}</code>。
+  關鍵約束：「<em>If the input contains cite_key fields, preserve them exactly</em>」── 確保 cite_key 一路傳遞不變。
+</p>
+
+<!-- =================================================================== -->
+<h2 id="citation-verify">6. Stage 23 — Citation Verify：四層驗證引擎</h2>
+<p>核心檔：<span class="src">literature/verify.py（957 行）</span>。零外部依賴，僅用 stdlib <code>urllib</code>。</p>
+
+<h3>6.1 分類結果</h3>
+<table>
+<thead><tr><th>狀態</th><th>含義</th><th>標題相似度</th></tr></thead>
+<tbody>
+<tr><td><span class="badge badge-ok">VERIFIED</span></td><td>API 確認存在且標題吻合</td><td>≥ 0.80</td></tr>
+<tr><td><span class="badge badge-warn">SUSPICIOUS</span></td><td>找到但 metadata 偏離</td><td>0.50–0.80</td></tr>
+<tr><td><span class="badge badge-bad">HALLUCINATED</span></td><td>任何 API 都找不到 / 相似度過低</td><td>&lt; 0.50</td></tr>
+<tr><td><span class="badge badge-muted">SKIPPED</span></td><td>無標題、所有 API 都無法連線、或超時</td><td>—</td></tr>
+</tbody>
+</table>
+
+<h3>6.2 四層驗證順序</h3>
+<div class="lifecycle-step">
+  <h4>Layer 1：arXiv ID 查詢</h4>
+  <p>
+    <span class="src">verify.py:183–265</span>。對 <code>https://export.arxiv.org/api/query?id_list={arxiv_id}</code> 做 GET，
+    解析 Atom XML。若條目本身寫了 <code>arxiv_id</code> 則優先走此路。Timeout 20 s。
+    標題比對採詞彙 Jaccard（<span class="src">verify.py:158–172</span>）。
+  </p>
+</div>
+<div class="lifecycle-step">
+  <h4>Layer 2：DOI 解析（CrossRef → DataCite Fallback）</h4>
+  <p>
+    <span class="src">verify.py:358–442</span>。先打 <code>https://api.crossref.org/works/{doi}</code>，
+    若 404 且 DOI 以 <code>10.48550/</code> 開頭（arXiv 自家 DOI），改打 DataCite
+    <code>https://api.datacite.org/dois/{doi}</code>。Timeout CrossRef 20 s、DataCite 15 s。
+  </p>
+</div>
+<div class="lifecycle-step">
+  <h4>Layer 3a：OpenAlex 標題搜尋（<code>verify_by_openalex</code>）</h4>
+  <p>
+    <span class="src">verify.py:454–527</span>。由於 OpenAlex 每天可打 10,000 次（遠寬於 arXiv 1 req/3 s），
+    被提升為標題搜尋的「主力」。回傳分數最高的標題；若無近似匹配標記 HALLUCINATED。
+  </p>
+</div>
+<div class="lifecycle-step">
+  <h4>Layer 3b：統一標題搜尋（<code>verify_by_title_search</code>，最後手段）</h4>
+  <p>
+    <span class="src">verify.py:577–655</span>。前述路徑都失敗時呼叫 <code>search_papers()</code>，limit=5。
+    注意：此函式雖然以「title_search」命名，實際上會同時查詢
+    <strong>Semantic Scholar 與 arXiv</strong>（透過統一檢索器），並非僅打 S2。
+    這層命中率最低，作為最後一道網。
+  </p>
+</div>
+
+<h3>6.3 主驗證流程</h3>
+<pre><code># verify.py:663-859 簡化版
+def verify_citations(bib_text, *, s2_api_key="", inter_verify_delay=1.5):
+    entries = parse_bibtex_entries(bib_text)        # L122-150
+    for entry in entries:
+        if cache_hit(entry.title): continue          # 365 天快取
+        # 嚴格的呼叫順序（每層之間有 sleep）
+        result = (
+            verify_by_doi(entry.doi, entry.title, delay=0.3)
+            or verify_by_openalex(entry.title, delay=0.2)
+            or verify_by_arxiv_id(entry.arxiv_id, entry.title, delay=1.5)
+            or verify_by_title_search(entry.title)   # 同時打 S2 + arXiv
+        )
+        save_cache(entry.title, result)
+        if time_elapsed() &gt; 300: break               # 全局 5 分鐘 timeout（BUG-22）
+    return VerificationReport(...)</code></pre>
+
+<h3>6.4 完整性分數</h3>
+<p>
+  <code>integrity_score = verified / (total − skipped)</code>，0.0–1.0。
+  此分數寫入 <code>verification_report.json</code> 作為論文最終 deliverable 之一。
+</p>
+
+<!-- =================================================================== -->
+<h2 id="anti-fab">7. 反幻覺：VerifiedRegistry 與 BibTeX 修剪</h2>
+<h3>7.1 寫作前的預驗證（P3）</h3>
+<p>
+  <span class="src">_paper_writing.py:1910–1932</span>。Stage 17 在送 LLM 撰寫前先跑一次 <code>verify_citations</code>
+  （inter_verify_delay 縮為 0.5 s），並呼叫 <code>filter_verified_bibtex(..., include_suspicious=True)</code>
+  把 HALLUCINATED 條目從 <code>references.bib</code> 中剔除，<strong>避免 LLM 從假引用中取材</strong>。
+</p>
+
+<h3>7.2 引用指令注入</h3>
+<pre><code>AVAILABLE REFERENCES (use [cite_key] to cite in the text):
+- [smith2024transformer] → TITLE: "Transformer Architecture..."
+
+CRITICAL CITATION RULES:
+- In the body text, cite using [cite_key] format
+- Do NOT invent references
+- SEMANTIC MATCHING: verify title matches concept
+- Cite 25-40 unique references total
+- Related Work alone should cite 15+ references</code></pre>
+<p>來源：<span class="src">_paper_writing.py:1959–1984</span></p>
+
+<h3>7.3 Stage 22 — Author-Year 回填與 BibTeX 修剪</h3>
+<p>
+  Stage 19 的 LLM 修訂常會把 <code>[smith2024transformer]</code> 改寫為 <em>(Smith et al., 2024)</em>。
+  <span class="src">_review_publish.py:1742–1806</span> 建立 author-year ↔ cite_key 映射並反向回填。
+</p>
+<p>
+  之後 Stage 22 抽取所有正文引用鍵（單鍵 <code>[xxx]</code>、複合鍵 <code>[xxx, yyy]</code> 或 <code>[xxx; yyy]</code>），
+  與 <code>references.bib</code> 的鍵集合做差集：
+</p>
+<ul>
+  <li>有條目但正文沒引用 → <strong>從 .bib 修剪</strong>（README 稱 "auto-pruned to match inline citations"）</li>
+  <li>正文引用但 .bib 沒條目（且總缺失 ≤ 30）→ 呼叫 <code>_resolve_missing_citations()</code> 反查 API 補上</li>
+  <li>仍無法解析者 → 直接從正文中刪除該引用，避免 LaTeX 編譯破窗</li>
+</ul>
+
+<h3>7.4 VerifiedRegistry：數字防偽（與引用驗證互補）</h3>
+<p>
+  <span class="src">pipeline/verified_registry.py:38–450</span>。此模組與 citation verify 平行，
+  但作用對象是「論文中的所有數字」。從 <code>experiment_summary.json</code> 抽取所有 verified 數值
+  （per-seed、condition aggregates、best_run metrics），並登錄其四捨五入變體（1–4 位小數）與百分比換算。
+</p>
+<p>
+  論文驗證器（<span class="src">paper_verifier.py:143–200+</span>）以正則抽 LaTeX 數字，
+  在「嚴格段落」（Results、Experiments、Ablations）對未登錄數字直接 REJECT；
+  在「寬鬆段落」（Introduction、Discussion）僅給 WARNING。
+</p>
+
+<!-- =================================================================== -->
+<h2 id="lifecycle">8. ★ 完整生命週期：Search → Citation 端到端</h2>
+<p>本章為任務核心。將以「一個輸入主題 <code>"adaptive learning rate schedules for transformers"</code> 」為例，逐步追蹤資料流。</p>
+
+<div class="lifecycle-step">
+<h4>Step 1 — 主題輸入與分解（Stage 1–2）</h4>
+<p>
+  CLI <code>researchclaw run --topic "adaptive ..."</code> 觸發 Runner，將主題傳給 Stage 1（TOPIC_INIT，產 SMART goal）
+  與 Stage 2（PROBLEM_DECOMPOSE，產 problem tree JSON）。
+  兩者的輸出將是 Stage 3 的 prompt 變數 <code>{topic}</code> 與 <code>{problem_tree}</code>。
+</p>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 2 — 查詢規劃（Stage 3 SEARCH_STRATEGY）</h4>
+<p>
+  Prompt（<span class="src">prompts.yaml:382</span>）以 JSON mode 呼叫 LLM，回傳 <code>search_plan_yaml + sources</code>。
+  若 LLM 失敗，<span class="src">_literature.py:41–78</span> 規則式擴展備援。
+  產出寫入 <code>artifacts/rc-*/stage-03/search_plan.yaml</code>。
+</p>
+<pre><code>search_strategies:
+  - name: core
+    queries: ["adaptive learning rate", "lr schedule transformer", ...]
+    sources: [openalex, semantic_scholar, arxiv]
+  - name: benchmark
+    queries: ["GLUE benchmark optimizer", ...]
+  - name: theory
+    queries: ["convergence analysis adaptive optimization", ...]</code></pre>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 3 — 多源檢索（Stage 4 LITERATURE_COLLECT）</h4>
+<p>
+  <span class="src">search.py:104–200</span> 的 <code>search_papers()</code> 依序：
+</p>
+<ol>
+  <li>查 cache（key = SHA256(query|source|limit)[:16]，3 天 TTL）；命中即返回。</li>
+  <li><strong>OpenAlex</strong>：每筆 200 ms 間隔；轉成 <code>Paper</code> 物件。</li>
+  <li><strong>Semantic Scholar</strong>：先檢查斷路器狀態；若 OPEN 則跳過。每筆 1.5 s 間隔。</li>
+  <li><strong>arXiv</strong>：用 <code>arxiv</code> 套件搜尋；斷路器在外層守護。</li>
+  <li>合併後去重（DOI → arxiv_id → 正規化標題完全比對）。</li>
+  <li>對每篇 Paper 呼叫 <code>to_bibtex()</code> 生成條目，寫入 <code>stage-04/references.bib</code>。</li>
+  <li>同時寫 <code>stage-04/candidates.jsonl</code>。</li>
+</ol>
+<div class="callout">
+  <strong>觀察</strong>：BibTeX 條目在「Stage 4 收論文當下」就生成，cite_key 也在此時固化。後續所有階段都共享同一份鍵命名空間。
+</div>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 4 — 雙重篩選（Stage 5，Gate）</h4>
+<p>先跑詞彙預過濾（標題＋摘要至少 1 個 topic keyword），再以 LLM 篩選器
+  （prompt <span class="src">literature_screen</span>）打 relevance / quality score。
+  Gate 5 預設需人類點頭；<code>--auto-approve</code> 模式跳過。
+  輸出 <code>stage-05/shortlist.jsonl</code>。
+</p>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 5 — 知識抽取（Stage 6 KNOWLEDGE_EXTRACT）</h4>
+<p>
+  LLM 以 JSON 模式把每篇 shortlist 變成 evidence card：
+  <code>{card_id, cite_key, problem, method, data, metrics, findings, limitations, citation}</code>。
+  Prompt 明確要求「保持 cite_key 不變」。輸出 <code>stage-06/evidence_cards.jsonl</code>。
+</p>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 6 — 寫作前的「預驗證」（Stage 17 PAPER_DRAFT 前置）</h4>
+<p>
+  <span class="src">_paper_writing.py:1910–1932</span>。在請 LLM 寫初稿前先跑一次 <code>verify_citations</code>，
+  用 <code>filter_verified_bibtex(include_suspicious=True)</code> 從 .bib 移除 HALLUCINATED 條目。
+  這是<strong>第一道引用守門</strong>。
+</p>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 7 — LLM 撰寫並插入 [cite_key]（Stage 17）</h4>
+<p>
+  Prompt 明列「AVAILABLE REFERENCES」清單與 CRITICAL CITATION RULES，要求 LLM 只能使用清單中的 cite_key、
+  禁止發明、Related Work 至少 15 引用、全篇 25–40 引用。
+  LLM 輸出 markdown：<code>Recent work [smith2024transformer] has shown ...</code>
+</p>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 8 — Peer Review 與 Revision（Stage 18–19）</h4>
+<p>
+  多代理同儕審查 + Methodology-Evidence 一致性檢查。
+  Revision 可能將 <code>[xxx2024yyy]</code> 改寫為 <em>(XXX et al., 2024)</em>。
+</p>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 9 — Export 階段的引用一致化（Stage 22）</h4>
+<p>
+  <span class="src">_review_publish.py:1727–1919</span> 三步驟：
+</p>
+<ol>
+  <li><strong>Author-year 回填</strong>：建構 <code>(author, year) → cite_key</code> 映射，把自然語言引用反向轉回方括號形式。</li>
+  <li><strong>引用鍵抽取</strong>：用 regex <code>[a-zA-Z]+\d{4}[a-zA-Z0-9_-]*</code> 抽出所有 cite_key（含複合 <code>[a,b;c]</code> 形式）。</li>
+  <li><strong>BibTeX 修剪 + 缺失補回</strong>：未引用之 .bib 條目被移除；正文有但 .bib 無者，若總缺失 ≤ 30 則呼叫 API 補回，否則從正文刪除。</li>
+</ol>
+</div>
+
+<div class="lifecycle-step">
+<h4>Step 10 — 最終 Citation Verify（Stage 23）</h4>
+<p>
+  <span class="src">verify.py:663–859</span>。對最終 <code>references.bib</code> 跑完整四層驗證，
+  輸出 <code>verification_report.json</code>：
+</p>
+<pre><code>{
+  "summary": {
+    "total": 38, "verified": 35, "suspicious": 2,
+    "hallucinated": 1, "skipped": 0, "integrity_score": 0.921
+  },
+  "results": [
+    {"cite_key":"vaswani2017attention","status":"verified","method":"arxiv_id","confidence":1.0,...},
+    {"cite_key":"fake2024made_up","status":"hallucinated","method":"title_search","details":"no match"}
+  ]
+}</code></pre>
+<p>
+  這是<strong>第二道引用守門</strong>。整份報告會與 paper.tex、references.bib 一起放入 <code>deliverables/</code>。
+</p>
+</div>
+
+<h3 id="lifecycle-summary">8.1 端到端產物路徑</h3>
+<pre><code>artifacts/rc-YYYYMMDD-HHMMSS-&lt;hash&gt;/
+├── stage-03/  search_plan.yaml, sources.json
+├── stage-04/  candidates.jsonl, references.bib（原始）
+├── stage-05/  shortlist.jsonl
+├── stage-06/  evidence_cards.jsonl
+├── stage-17/  paper_draft.md（含 [cite_key]）
+├── stage-22/  paper_final.md, references.bib（已修剪）
+├── stage-23/  verification_report.json
+└── deliverables/
+    ├── paper.tex
+    ├── references.bib
+    └── verification_report.json</code></pre>
+
+<!-- =================================================================== -->
+<h2 id="pros-cons">9. 技術優缺點分析</h2>
+<div class="pros-cons">
+  <div class="pros">
+    <h3>優點</h3>
+    <ul>
+      <li><strong>四層驗證 + 雙時點驗證</strong>（草稿前 + 出口前）有效堵住 LLM 引用幻覺</li>
+      <li><strong>三態斷路器</strong>面對 S2/arXiv 429 與不穩 API 仍能優雅降級</li>
+      <li><strong>零外部依賴的 verify.py</strong>（純 stdlib urllib）部署友善</li>
+      <li>cite_key 在 Stage 4 一次定錨，所有下游階段共享；避免 ID 漂移</li>
+      <li>365 天的 verify 快取顯著節省重跑成本（同一論文驗證一次即可）</li>
+      <li>Author-year ↔ cite_key 自動雙向轉換，吸收 LLM 風格漂移</li>
+      <li>BibTeX 自動修剪確保 .bib 與正文嚴格一致，無 dangling reference</li>
+      <li>VerifiedRegistry 與引用驗證形成「引用真偽 + 數字真偽」的雙軌反幻覺</li>
+    </ul>
+  </div>
+  <div class="cons">
+    <h3>缺點與風險</h3>
+    <ul>
+      <li>S2 / arXiv 是公開速率受限服務；大規模驗證會被全域 5 分鐘 timeout 截斷</li>
+      <li>標題相似度為 <strong>Jaccard 詞彙</strong>，對 typo、副標題切割較弱</li>
+      <li>OpenAlex 雖然作主力，但其 metadata 在新領域論文上覆蓋不全</li>
+      <li>cite_key 生成依賴 ASCII 折疊，CJK 作者姓氏可能塌縮成相同鍵</li>
+      <li>LLM 篩選若 hallucinate <code>relevance_score</code>，預過濾門檻偏低（1 個關鍵字）難以攔截</li>
+      <li>SUSPICIOUS 預設仍會保留進入論文，存在「半幻覺」漏網風險</li>
+      <li>整體流程倚重 LLM JSON mode 穩定性；模型若回傳非 JSON 將進入 fallback 路徑</li>
+      <li>沒有針對 retracted papers / preprint vs published 的特殊處理</li>
+    </ul>
+  </div>
+</div>
+
+<!-- =================================================================== -->
+<h2 id="reproduce-prompt">10. 附錄：交付給其他 Coding Agent 的覆現 Prompt</h2>
+<p>
+  以下 prompt 設計為可直接貼給另一個 coding agent（Claude Code / Codex / Cursor / Aider 等），
+  令其在 <strong>~1500 行 Python</strong> 內覆現 ARC 的 Search &amp; Citation 邏輯（不含 LLM 寫作部分）。
+</p>
+
+<div class="callout">
+  <strong>使用方式</strong>：複製下方 <code>&lt;pre&gt;</code> 區塊整體內容，貼到目標 agent 的對話起始。
+  Agent 完成後請手動驗證：（a）四層驗證可分別跑通；（b）斷路器在連續 429 後切換到 OPEN；
+  （c）BibTeX 自動修剪能正確移除無引用條目。
+</div>
+
+<pre><code># ROLE
+You are a senior Python engineer. Your task is to reproduce the
+**search → literature collection → citation verification** subsystem of
+AutoResearchClaw (ARC) as a standalone, runnable library. No LLM is required
+for the verification path — only the literature_screen and search_strategy
+stages call an LLM (provide a mock/dry-run mode).
+
+# DELIVERABLES
+A pip-installable package `litverify/` with the following modules. All HTTP
+must use only Python stdlib `urllib` (no `requests`, no `httpx`). Total target
+~1500 LOC.
+
+litverify/
+├── models.py          # Paper, Author, cite_key, to_bibtex
+├── cache.py           # SHA256-keyed, per-source TTL, JSON-on-disk cache
+├── circuit_breaker.py # 3-state (CLOSED/OPEN/HALF_OPEN) breaker
+├── openalex.py        # OpenAlex client (no API key needed)
+├── semantic_scholar.py
+├── arxiv_client.py    # use the `arxiv` pypi pkg internally
+├── search.py          # unified multi-source orchestrator
+├── verify.py          # 4-layer citation verification engine
+├── bibtex.py          # parse_bibtex_entries + filter_verified_bibtex
+├── cli.py             # argparse: `litverify search` + `litverify verify`
+└── tests/             # pytest, mock all HTTP via responses or stdlib mocks
+
+# DATA MODEL — models.py
+@dataclass(frozen=True)
+class Author: name: str
+@dataclass(frozen=True)
+class Paper:
+    paper_id: str; title: str; authors: tuple[Author, ...]; year: int|None
+    abstract: str = ""; venue: str = ""; citation_count: int = 0
+    doi: str = ""; arxiv_id: str = ""; url: str = ""
+    source: str = ""   # "openalex"|"semantic_scholar"|"arxiv"
+    _bibtex_override: dict|None = None
+
+    @property
+    def cite_key(self) -&gt; str:
+        # lastname (ASCII-folded, lowercased) + year + first meaningful
+        # word from title (&gt;3 chars, not stopword).
+        # Stopwords: {"the","a","an","of","and","for","with","on","in","to",
+        #             "from","via","by","using","through","towards"}
+        # Example: Paper("Attention Is All You Need", [Author("Vaswani")], 2017)
+        #          -&gt; "vaswani2017attention"
+
+    def to_bibtex(self) -&gt; str:
+        # Heuristics:
+        #  - If venue looks like arXiv category (regex: r"^[a-z]{2}\.[A-Z]{2}$"
+        #    e.g. "cs.LG") OR source == "arxiv" -&gt; @article with journal={arXiv preprint arXiv:{id}}
+        #  - If venue in conference list (NeurIPS, ICML, ICLR, ACL, EMNLP,
+        #    CVPR, ICCV, ECCV, AAAI, IJCAI, KDD, WWW, SIGIR, ...) -&gt; @inproceedings
+        #  - Else -&gt; @article
+        #  - Include doi field if present, eprint+archivePrefix if arxiv_id present
+
+# CACHE — cache.py
+def cache_key(query: str, source: str, limit: int) -&gt; str:
+    return sha256(f"{query.lower()}|{source}|{limit}".encode()).hexdigest()[:16]
+
+# Storage: .litverify_cache/literature/&lt;key&gt;.json
+# Each file: {"query": ..., "source": ..., "timestamp": float, "papers": [serialized Paper dicts]}
+TTL = {
+    "arxiv": 24*3600,
+    "semantic_scholar": 3*86400,
+    "openalex": 3*86400,
+    "citation_verify": 365*86400,
+}
+
+# CIRCUIT BREAKER — circuit_breaker.py
+class CircuitBreaker:
+    """Three-state breaker.
+       CLOSED -&gt; OPEN after `failure_threshold` consecutive failures.
+       OPEN -&gt; HALF_OPEN after `cooldown` seconds (start 120s, double on
+              each re-open up to `max_cooldown` 600s).
+       HALF_OPEN: a single probe request; on success -&gt; CLOSED &amp; reset cooldown;
+                  on failure -&gt; OPEN &amp; cooldown *= 2."""
+    def __init__(self, failure_threshold=3, initial_cooldown=120,
+                 max_cooldown=600): ...
+    def call(self, fn, *args, **kw): ...     # raises CircuitOpen if OPEN
+    def record_success(self): ...
+    def record_failure(self): ...
+
+# OPENALEX — openalex.py
+BASE = "https://api.openalex.org/works"
+POLITE_EMAIL = os.getenv("OPENALEX_POLITE_EMAIL", "")
+MIN_INTERVAL = 0.2   # seconds between requests
+def search(query: str, limit: int = 25) -&gt; list[Paper]:
+    # GET {BASE}?search={query}&amp;per-page={limit}&amp;mailto={POLITE_EMAIL}
+    # Map response["results"][i] -&gt; Paper(source="openalex", ...)
+
+# SEMANTIC SCHOLAR — semantic_scholar.py
+BASE = "https://api.semanticscholar.org/graph/v1/paper/search"
+MIN_INTERVAL = 1.5
+_breaker = CircuitBreaker(3, 120, 600)
+def search(query: str, limit: int = 25, api_key: str = "") -&gt; list[Paper]:
+    # 429 -&gt; record_failure; success -&gt; record_success
+    # Fields: title,authors,year,abstract,venue,citationCount,externalIds,url
+    # If externalIds has ArXiv -&gt; set arxiv_id; if DOI -&gt; doi
+
+# ARXIV — arxiv_client.py
+# Use `pip install arxiv&gt;=2.4`. Wrap with CircuitBreaker (180s cooldown).
+def search(query: str, limit: int = 25) -&gt; list[Paper]: ...
+def by_id_list(arxiv_ids: list[str]) -&gt; list[Paper]: ...
+
+# UNIFIED SEARCH — search.py
+def search_papers(query: str, *, limit: int = 25, sources: tuple = (
+    "openalex","semantic_scholar","arxiv"
+)) -&gt; list[Paper]:
+    # 1. Try cache per (query, source). Skip source if breaker OPEN.
+    # 2. Call sources in given order (openalex first).
+    # 3. Deduplicate in this order:
+    #      a. by DOI (lowercased, prefix-stripped)
+    #      b. by arxiv_id
+    #      c. by normalized title (lowercased, punctuation stripped) — exact equality
+    # 4. Write each new result to cache.
+
+# CITATION VERIFY — verify.py
+class VerifyStatus(str, Enum):
+    VERIFIED="verified"; SUSPICIOUS="suspicious"
+    HALLUCINATED="hallucinated"; SKIPPED="skipped"
+
+@dataclass
+class CitationResult:
+    cite_key: str; title: str; status: VerifyStatus
+    confidence: float; method: str  # "arxiv_id"|"doi"|"openalex"|"title_search"|"skipped"
+    details: str = ""; matched_paper: Paper|None = None
+    def to_dict(self) -&gt; dict: ...
+
+@dataclass
+class VerificationReport:
+    total: int = 0; verified: int = 0; suspicious: int = 0
+    hallucinated: int = 0; skipped: int = 0
+    results: list[CitationResult] = field(default_factory=list)
+    @property
+    def integrity_score(self) -&gt; float:
+        verifiable = self.total - self.skipped
+        return 1.0 if verifiable &lt;= 0 else round(self.verified/verifiable, 3)
+
+def title_similarity(a: str, b: str) -&gt; float:
+    """Jaccard on lowercased token sets, with stopword removal."""
+
+def classify(sim: float) -&gt; VerifyStatus:
+    if sim &gt;= 0.80: return VERIFIED
+    if sim &gt;= 0.50: return SUSPICIOUS
+    return HALLUCINATED
+
+# Layer 1: arXiv ID lookup
+def verify_by_arxiv_id(arxiv_id: str, expected_title: str) -&gt; CitationResult|None:
+    # GET https://export.arxiv.org/api/query?id_list={arxiv_id}, timeout=20s
+    # Parse Atom XML; return None on 404.
+
+# Layer 2: DOI -&gt; CrossRef, then DataCite (for 10.48550/ arXiv DOIs)
+def verify_by_doi(doi: str, expected_title: str) -&gt; CitationResult|None:
+    # GET https://api.crossref.org/works/{doi}, timeout=20s
+    # If 404 AND doi.startswith("10.48550/"):
+    #    GET https://api.datacite.org/dois/{doi}, timeout=15s
+
+# Layer 3a: OpenAlex title search (preferred over S2 due to higher rate limit)
+def verify_by_openalex(title: str) -&gt; CitationResult|None: ...
+
+# Layer 3b: Unified title search via search_papers() — queries Semantic
+# Scholar AND arXiv. Last resort.
+def verify_by_title_search(title: str, api_key: str = "") -&gt; CitationResult|None: ...
+
+# Main entry point
+def verify_citations(bib_text: str, *, s2_api_key: str = "",
+                     inter_verify_delay: float = 1.5,
+                     global_timeout_sec: int = 300) -&gt; VerificationReport:
+    """
+    1. Parse BibTeX entries.
+    2. For each entry, in order:
+         cache hit ? return cached
+         -&gt; verify_by_doi (delay 0.3s)
+         -&gt; verify_by_openalex (delay 0.2s)
+         -&gt; verify_by_arxiv_id (delay 1.5s)
+         -&gt; verify_by_title_search
+       Cache result for 365 days keyed by sha256(title).
+    3. Abort gracefully if global elapsed &gt; 300s.
+    4. Return VerificationReport.
+    """
+
+def filter_verified_bibtex(bib_text: str, report: VerificationReport,
+                           include_suspicious: bool = True) -&gt; str:
+    """Keep only VERIFIED + (SUSPICIOUS if include_suspicious) + SKIPPED
+       entries. Remove HALLUCINATED."""
+
+# BIBTEX — bibtex.py
+def parse_bibtex_entries(text: str) -&gt; list[dict]:
+    """Return [{'kind':'article','cite_key':'smith2024x','fields':{'title':...}}]"""
+def render_bibtex_entries(entries: list[dict]) -&gt; str: ...
+
+# CLI — cli.py
+# `litverify search "adaptive lr transformer" --limit 30 --out refs.bib`
+# `litverify verify refs.bib --output verification_report.json --no-suspicious`
+
+# TESTS — tests/
+# - test_cite_key: golden cases incl. "He, Kaiming" + "Deep Residual Learning"
+#       -&gt; he2016deep
+# - test_circuit_breaker: simulate 3 failures -&gt; OPEN; sleep cooldown -&gt;
+#       HALF_OPEN; one more failure -&gt; OPEN with doubled cooldown
+# - test_dedup_pipeline: feed 3 papers with same DOI, same arxiv_id, and
+#       identical normalized titles -&gt; dedup to 1
+# - test_verify_4_layers: mock each layer, assert order &amp; fallback
+# - test_filter_bibtex: 5 entries, 1 hallucinated -&gt; output has 4
+# - test_global_timeout: monkeypatch time.time, assert verify aborts at 300s
+
+# CRITICAL INVARIANTS (do not break)
+1. cite_key MUST be deterministic given (first author surname, year, title).
+2. Verification call order MUST be: doi -&gt; openalex -&gt; arxiv_id -&gt; title_search.
+   (OpenAlex before arXiv because rate limit; S2 last because most aggressive.)
+3. 365-day cache for verify results, keyed by sha256(normalized_title).
+4. Stdlib only for HTTP. No `requests`. The arxiv pypi package is the ONLY
+   exception.
+5. Three-state breaker: OPEN -&gt; HALF_OPEN MUST send exactly ONE probe before
+   transitioning.
+6. Global verify timeout = 300s; on timeout, mark remaining entries SKIPPED
+   (not HALLUCINATED) and return partial report.
+7. filter_verified_bibtex MUST preserve original entry order and formatting
+   of kept entries (no re-rendering of unrelated fields).
+8. Jaccard similarity MUST lowercase + remove punctuation + remove stopwords
+   before tokenization.
+
+# OUT OF SCOPE
+- Paper writing, LLM prompts, knowledge extraction, novelty detection.
+- Web search (Google Scholar, Tavily).
+- VerifiedRegistry / numeric anti-fabrication.
+- Anything past Stage 6 of the original pipeline.
+
+# ACCEPTANCE CRITERIA
+- `pip install -e . &amp;&amp; pytest` is green.
+- `litverify search "transformer" --limit 5` returns 5 deduped papers and a
+  valid `refs.bib`.
+- `litverify verify refs.bib` produces a JSON report with at least one
+  VERIFIED entry when run online; deterministic offline test uses fixtures.
+- All public functions documented with type hints and 1-line docstrings.
+- Total LOC ≤ 1800 (excluding tests).
+
+When done, output:
+1. A tree of the created package.
+2. The output of `pytest -q`.
+3. The output of `litverify search "attention is all you need" --limit 3`.
+</code></pre>
+
+<!-- =================================================================== -->
+<div class="footer">
+  <p>
+    本文件由分析 <code>aiming-lab/AutoResearchClaw</code> 主分支於 2026-05-11 之程式碼產生。
+    所有檔案路徑與行號均已對照原始倉庫。
+    後續若 ARC 升級至 v0.5+，建議重新覆核 <code>verify.py</code>、<code>_review_publish.py</code> 之行號。
+  </p>
+</div>
+
+</body>
+</html>
